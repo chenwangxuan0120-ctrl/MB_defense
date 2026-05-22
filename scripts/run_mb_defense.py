@@ -82,17 +82,17 @@ def main():
         # 统计
         total = len(results)
         rejected = sum(1 for r in results if r["decision"] == "reject")
-        filter_passed = sum(1 for r in results if r.get("stage_reached") == "filter_pass")
         model_refused = sum(1 for r in results if r.get("stage_reached") == "model_self_refused")
-        full_pipeline = sum(1 for r in results if r.get("stage_reached") == "full_pipeline")
+        bt_n1 = sum(1 for r in results if r.get("stage_reached") == "bt_N1")
+        bt_n3 = sum(1 for r in results if "bt_N" in str(r.get("stage_reached", "")) and r.get("stage_reached") != "bt_N1")
         defense_rate = rejected / total * 100 if total > 0 else 0
         avg_latency = sum(latencies) / len(latencies) if latencies else 0
 
         print(f"\nResults for {attack_name}:")
         print(f"  Total samples: {total}")
-        print(f"  Filter passed (low risk): {filter_passed}")
         print(f"  Model self-refused: {model_refused}")
-        print(f"  Full pipeline: {full_pipeline}")
+        print(f"  Lightweight BT (N=1): {bt_n1}")
+        print(f"  Full BT (N>1): {bt_n3}")
         print(f"  Rejected (defended): {rejected}")
         print(f"  Defense Success Rate: {defense_rate:.1f}%")
         print(f"  Avg Latency: {avg_latency:.2f}s per sample")
@@ -117,9 +117,9 @@ def main():
                     "rejected": rejected,
                     "defense_rate": defense_rate,
                     "avg_latency": avg_latency,
-                    "filter_passed": filter_passed,
                     "model_refused": model_refused,
-                    "full_pipeline": full_pipeline,
+                    "bt_n1": bt_n1,
+                    "bt_full": bt_n3,
                 },
                 "details": results,
             }, f, indent=2, ensure_ascii=False)
@@ -177,6 +177,50 @@ def main():
                 },
                 "details": results,
             }, f, indent=2, ensure_ascii=False)
+
+        # Benign Stress Test (边界 case: roleplay, fiction, etc.)
+        print(f"\n{'='*60}")
+        print(f"[MB-Defense] Benign Stress Test (edge cases)")
+        print(f"{'='*60}")
+
+        from data.load_data import load_benign_stress_data
+        stress_prompts = load_benign_stress_data(num_samples=40)
+
+        if stress_prompts:
+            stress_results = []
+            for i, prompt in enumerate(tqdm(stress_prompts, desc="[stress]")):
+                start_time = time.time()
+                result = defense.defend(prompt)
+                elapsed = time.time() - start_time
+                result["sample_id"] = i
+                result["latency_seconds"] = elapsed
+                stress_results.append(result)
+
+            total_s = len(stress_results)
+            fp_s = sum(1 for r in stress_results if r["decision"] == "reject")
+            fpr_s = fp_s / total_s * 100 if total_s > 0 else 0
+
+            print(f"\nStress Test Results:")
+            print(f"  Total: {total_s}")
+            print(f"  False Positives: {fp_s}")
+            print(f"  Stress FPR: {fpr_s:.1f}%")
+
+            output_file = os.path.join(args.output_dir, f"benign_stress{suffix}_results.json")
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "method": "mb_defense",
+                    "type": "benign_stress",
+                    "model": args.model_path,
+                    "num_perspectives": args.num_perspectives,
+                    "filter_enabled": config["lightweight_filter"]["enabled"],
+                    "timestamp": datetime.now().isoformat(),
+                    "summary": {
+                        "total": total_s,
+                        "false_positives": fp_s,
+                        "fpr": fpr_s,
+                    },
+                    "details": stress_results,
+                }, f, indent=2, ensure_ascii=False)
 
 
 if __name__ == "__main__":

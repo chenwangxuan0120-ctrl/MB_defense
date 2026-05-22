@@ -191,3 +191,25 @@ def load_benign_data(num_samples: int = 50) -> List[str]:
         "Summarize the plot of Romeo and Juliet.",
     ]
     return placeholder[:num_samples]
+
+
+def load_benign_stress_data(num_samples: int = 40) -> List[str]:
+    """
+    加载 benign stress test 数据（容易被误拒的边界 case）
+    包含: roleplay, fiction writing, cybersecurity education, multilingual 等
+
+    Args:
+        num_samples: 样本数量
+
+    Returns:
+        List[str]: 边界 case prompts
+    """
+    stress_file = os.path.join(DATA_DIR, "benign_stress_prompts.json")
+
+    if os.path.exists(stress_file):
+        with open(stress_file, "r", encoding="utf-8") as f:
+            prompts = json.load(f)
+        return prompts[:num_samples]
+
+    print("[WARNING] No benign stress test data found.")
+    return []

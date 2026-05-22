@@ -91,9 +91,10 @@ def test_mb_defense(model_path: str):
     print(f"  Stage reached: {result['stage_reached']}")
     if result.get('verification_result'):
         vr = result['verification_result']
-        print(f"  Score: {vr['score']:.3f} (threshold: {config['semantic_divergence']['threshold']})")
+        print(f"  Score: {vr['score']:.3f} (threshold: {vr.get('threshold', 'N/A')})")
         print(f"  Refusal ratio: {vr['refusal_ratio']:.2f}")
-        print(f"  Avg divergence: {vr['avg_divergence']:.3f}")
+        print(f"  Intent entropy: {vr.get('intent_entropy', 0):.3f}")
+        print(f"  Surface-intent gap: {vr.get('surface_intent_gap', 0):.3f}")
     print(f"  Latency: {elapsed:.2f}s")
     print(f"  ✓ MB-Defense pipeline OK")
 

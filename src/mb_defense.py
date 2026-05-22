@@ -1,10 +1,14 @@
 """
-MB-Defense: 完整的多视角Backtranslation防御流程
+MB-Defense: Multi-Perspective Backtranslation with Intent Consistency Verification
 
 整合三个模块:
-- Module 1: 轻量预筛选
-- Module 2: 多视角Backtranslation
-- Module 3: 语义偏离校验 + 投票判定
+- Module 1: Adaptive Invocation Strategy (根据 ambiguity 调整验证强度)
+- Module 2: Multi-Perspective Backtranslation (多视角意图推断)
+- Module 3: Intent Consistency Verification (意图一致性校验)
+
+核心思想:
+- Jailbreak prompt 经过伪装，多视角 BT 会推断出不一致的意图 (高 entropy)
+- Benign prompt 意图明确，多视角 BT 推断结果一致 (低 entropy)
 """
 
 import torch
@@ -12,7 +16,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from src.lightweight_filter import LightweightFilter
 from src.multi_perspective_bt import MultiPerspectiveBT
-from src.semantic_divergence import SemanticDivergenceVerifier
+from src.semantic_divergence import IntentConsistencyVerifier
 
 
 class MBDefense:
@@ -25,7 +29,6 @@ class MBDefense:
         """
         self.config = config
         model_path = config["model"]["target_model_path"]
-        device = config["model"]["device"]
 
         # 加载目标模型
         print(f"Loading target model from {model_path}...")
@@ -36,13 +39,12 @@ class MBDefense:
             device_map="auto",
         )
         self.model.eval()
-        # device_map="auto" 时，模型自动分配设备，用 model.device 获取实际设备
         self.device = next(self.model.parameters()).device
         print(f"Target model loaded on {self.device}.")
 
-        # 初始化 Module 1: 轻量预筛选
+        # 初始化 Module 1: Adaptive Invocation Strategy
         filter_cfg = config["lightweight_filter"]
-        self.lightweight_filter = LightweightFilter(
+        self.adaptive_filter = LightweightFilter(
             model=self.model,
             tokenizer=self.tokenizer,
             ppl_threshold=filter_cfg["ppl_threshold"],
@@ -50,23 +52,24 @@ class MBDefense:
             special_char_ratio=filter_cfg["special_char_ratio"],
         )
 
-        # 初始化 Module 2: 多视角BT
+        # 初始化 Module 2: Multi-Perspective BT
         mp_cfg = config["multi_perspective"]
         self.multi_bt = MultiPerspectiveBT(
             model=self.model,
             tokenizer=self.tokenizer,
-            device=device,
+            device=str(self.device),
             num_perspectives=mp_cfg["num_perspectives"],
             temperature=mp_cfg["temperature"],
             max_new_tokens=mp_cfg["max_new_tokens"],
         )
 
-        # 初始化 Module 3: 语义偏离校验
+        # 初始化 Module 3: Intent Consistency Verification
         sd_cfg = config["semantic_divergence"]
-        self.verifier = SemanticDivergenceVerifier(
+        self.verifier = IntentConsistencyVerifier(
             embedding_model_name=config["model"]["embedding_model"],
             alpha=sd_cfg["alpha"],
-            beta=sd_cfg["beta"],
+            beta=sd_cfg.get("beta", 0.35),
+            gamma=sd_cfg.get("gamma", 0.25),
             threshold=sd_cfg["threshold"],
         )
 
@@ -91,10 +94,16 @@ class MBDefense:
 
     def defend(self, input_prompt: str) -> dict:
         """
-        执行完整的MB-Defense防御流程
+        执行 MB-Defense 防御流程
+
+        流程:
+        1. Adaptive Invocation: 判断 ambiguity → 决定用 N=1 还是 N=3
+        2. 生成初始 response
+        3. Multi-Perspective BT: 用 N 个视角推断意图
+        4. Intent Consistency Verification: 检测意图一致性
 
         Args:
-            input_prompt: 用户输入的prompt
+            input_prompt: 用户输入的 prompt
 
         Returns:
             dict: 包含决策和各模块中间结果
@@ -103,6 +112,7 @@ class MBDefense:
             "input_prompt": input_prompt,
             "decision": None,
             "stage_reached": None,
+            "num_perspectives_used": None,
             "filter_result": None,
             "initial_response": None,
             "backtranslated_prompts": None,
@@ -110,39 +120,46 @@ class MBDefense:
             "verification_result": None,
         }
 
-        # ===== Stage 1: 轻量预筛选 =====
+        # ===== Stage 1: Adaptive Invocation Strategy =====
         if self.config["lightweight_filter"]["enabled"]:
-            filter_result = self.lightweight_filter.filter(input_prompt)
+            filter_result = self.adaptive_filter.filter(input_prompt)
             result["filter_result"] = filter_result
+            # 根据 ambiguity 调整视角数（不直接放行）
+            num_perspectives = filter_result["recommended_perspectives"]
+        else:
+            # filter 禁用时使用配置中的默认值
+            num_perspectives = self.config["multi_perspective"]["num_perspectives"]
 
-            if filter_result["pass_through"]:
-                # 低风险，直接放行
-                result["decision"] = "accept"
-                result["stage_reached"] = "filter_pass"
-                return result
+        result["num_perspectives_used"] = num_perspectives
 
-        # ===== Stage 2: 多视角 Backtranslation =====
-        result["stage_reached"] = "full_pipeline"
-
-        # 先生成初始回复
+        # ===== Stage 2: 生成初始回复 =====
         initial_response = self.generate(input_prompt)
         result["initial_response"] = initial_response
 
-        # 如果模型本身就拒绝了，不需要防御
+        # 如果模型本身就拒绝了，说明安全对齐生效，不需要额外防御
         if self.verifier.is_refusal(initial_response):
             result["decision"] = "accept"
             result["stage_reached"] = "model_self_refused"
             return result
 
-        # 多视角backtranslation
+        # ===== Stage 3: Multi-Perspective Backtranslation =====
+        result["stage_reached"] = f"bt_N{num_perspectives}"
+
+        # 临时调整视角数
+        original_n = self.multi_bt.num_perspectives
+        self.multi_bt.num_perspectives = min(num_perspectives, len(self.multi_bt.TEMPLATES))
+
         backtranslated_prompts = self.multi_bt.multi_backtranslate(initial_response)
         result["backtranslated_prompts"] = backtranslated_prompts
 
-        # 对每个BT prompt生成回复
+        # 对每个 BT prompt 生成回复
         bt_responses = self.multi_bt.get_responses(backtranslated_prompts)
         result["bt_responses"] = bt_responses
 
-        # ===== Stage 3: 语义偏离校验 + 投票判定 =====
+        # 恢复原始设置
+        self.multi_bt.num_perspectives = original_n
+
+        # ===== Stage 4: Intent Consistency Verification =====
         verification = self.verifier.verify(
             original_prompt=input_prompt,
             backtranslated_prompts=backtranslated_prompts,

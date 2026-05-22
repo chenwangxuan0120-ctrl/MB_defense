@@ -1,10 +1,17 @@
 """
-Module 3: 语义偏离校验 + 投票判定 (Semantic Divergence Verification)
+Module 3: Intent Consistency Verification
 
-目的: 量化攻击伪装程度，提升判定准确性
-方法:
-1. 用sentence embedding计算原始prompt与backtranslated prompts的语义偏离度
-2. 结合拒绝投票做最终判定
+核心思想:
+- Benign prompt: 多个 BT 推断出的意图高度一致 (低 entropy)
+- Jailbreak prompt: 多个 BT 推断出的意图分散不一致 (高 entropy)
+
+检测信号:
+1. Intent Entropy: 多个 BT 结果之间的 pairwise similarity 的 variance
+2. Surface-Intent Gap: 原始 prompt 与 BT prompts 的语义距离
+3. Refusal Consistency: 模型对 BT prompts 的拒绝一致性
+
+最终判定:
+Score = α × refusal_ratio + β × intent_entropy + γ × surface_intent_gap
 """
 
 import numpy as np
@@ -12,10 +19,10 @@ from typing import List
 from sentence_transformers import SentenceTransformer
 
 
-class SemanticDivergenceVerifier:
-    """语义偏离校验 + 投票判定模块"""
+class IntentConsistencyVerifier:
+    """Intent Consistency Verification 模块"""
 
-    # 拒绝关键词（与backtranslation.py一致）
+    # 拒绝关键词
     REFUSAL_KEYWORDS = [
         "I cannot",
         "I can't",
@@ -32,58 +39,114 @@ class SemanticDivergenceVerifier:
         "harmful",
         "unethical",
         "illegal",
+        "I'm not going to",
+        "I apologize, but",
+        "I'm unable to",
+        "violates my guidelines",
+        "I don't think I should",
     ]
 
     def __init__(
         self,
         embedding_model_name: str = "all-MiniLM-L6-v2",
-        alpha: float = 0.6,
-        beta: float = 0.4,
-        threshold: float = 0.5,
+        alpha: float = 0.4,
+        beta: float = 0.35,
+        gamma: float = 0.25,
+        threshold: float = 0.45,
     ):
         """
         Args:
-            embedding_model_name: sentence embedding模型名
+            embedding_model_name: sentence embedding 模型名
             alpha: 拒绝比例权重
-            beta: 语义偏离度权重
+            beta: intent entropy 权重
+            gamma: surface-intent gap 权重
             threshold: 最终判定阈值
         """
         self.alpha = alpha
         self.beta = beta
+        self.gamma = gamma
         self.threshold = threshold
 
         print(f"Loading embedding model: {embedding_model_name}...")
         self.embedding_model = SentenceTransformer(embedding_model_name)
         print("Embedding model loaded.")
 
-    def compute_divergence(self, original_prompt: str, backtranslated_prompts: List[str]) -> List[float]:
+    def compute_intent_entropy(self, backtranslated_prompts: List[str]) -> float:
         """
-        计算原始prompt与每个backtranslated prompt的语义偏离度
+        计算 Intent Entropy: 多个 BT 结果之间的一致性
+
+        方法: 计算所有 BT prompt 之间的 pairwise cosine similarity，
+        然后取 variance。variance 越大说明推断结果越不一致。
+
+        Benign: BT 结果一致 → pairwise sim 都高 → variance 低 → entropy 低
+        Jailbreak: BT 结果分散 → pairwise sim 参差不齐 → variance 高 → entropy 高
 
         Args:
-            original_prompt: 原始输入prompt
-            backtranslated_prompts: 多视角推断出的prompts
+            backtranslated_prompts: 多视角推断出的 prompts
 
         Returns:
-            List[float]: 每个BT prompt的偏离度 (0-1, 越高越偏离)
+            float: intent entropy (0-1, 归一化后)
         """
-        # 编码
+        if len(backtranslated_prompts) < 2:
+            return 0.0
+
+        # 编码所有 BT prompts
+        embeddings = self.embedding_model.encode(
+            backtranslated_prompts, normalize_embeddings=True
+        )
+
+        # 计算 pairwise cosine similarity
+        n = len(embeddings)
+        pairwise_sims = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                sim = np.dot(embeddings[i], embeddings[j])
+                pairwise_sims.append(sim)
+
+        if not pairwise_sims:
+            return 0.0
+
+        # Intent entropy = 1 - mean_similarity + std_similarity
+        # 高 entropy = BT 结果之间不一致
+        mean_sim = np.mean(pairwise_sims)
+        std_sim = np.std(pairwise_sims)
+
+        # 归一化到 [0, 1]
+        # mean_sim 低 → 不一致 → entropy 高
+        # std_sim 高 → 不稳定 → entropy 高
+        entropy = (1.0 - mean_sim) * 0.7 + std_sim * 0.3
+        entropy = max(0.0, min(1.0, entropy))
+
+        return entropy
+
+    def compute_surface_intent_gap(
+        self, original_prompt: str, backtranslated_prompts: List[str]
+    ) -> float:
+        """
+        计算 Surface-Intent Gap: 原始 prompt 与推断意图之间的距离
+
+        攻击 prompt 经过伪装，表面语义与真实意图差距大 → gap 大
+        正常 prompt 表面就是真实意图 → gap 小
+
+        Args:
+            original_prompt: 原始输入 prompt
+            backtranslated_prompts: 多视角推断出的 prompts
+
+        Returns:
+            float: surface-intent gap (0-1)
+        """
         all_texts = [original_prompt] + backtranslated_prompts
         embeddings = self.embedding_model.encode(all_texts, normalize_embeddings=True)
 
         original_emb = embeddings[0]
-        divergences = []
+        gaps = []
 
         for i in range(1, len(embeddings)):
-            # 余弦相似度（已归一化，直接点积）
-            cosine_sim = np.dot(original_emb, embeddings[i])
-            # 偏离度 = 1 - 相似度
-            divergence = 1.0 - cosine_sim
-            # clip到[0, 1]
-            divergence = max(0.0, min(1.0, divergence))
-            divergences.append(divergence)
+            sim = np.dot(original_emb, embeddings[i])
+            gap = 1.0 - sim
+            gaps.append(max(0.0, min(1.0, gap)))
 
-        return divergences
+        return np.mean(gaps) if gaps else 0.0
 
     def is_refusal(self, response: str) -> bool:
         """判断回复是否为拒绝"""
@@ -100,37 +163,38 @@ class SemanticDivergenceVerifier:
         bt_responses: List[str],
     ) -> dict:
         """
-        综合判定
+        Intent Consistency Verification
 
-        Score = α × (拒绝比例) + β × (平均语义偏离度)
-        if Score > threshold: Reject
+        Score = α × refusal_ratio + β × intent_entropy + γ × surface_intent_gap
+        if Score > threshold: Reject (intent inconsistency detected)
         else: Accept
 
         Args:
-            original_prompt: 原始输入prompt
-            backtranslated_prompts: 多视角推断出的prompts
-            bt_responses: 对BT prompts的回复
+            original_prompt: 原始输入 prompt
+            backtranslated_prompts: 多视角推断出的 prompts
+            bt_responses: 对 BT prompts 的回复
 
         Returns:
-            dict: {
-                "decision": "accept" or "reject",
-                "score": float,
-                "refusal_ratio": float,
-                "avg_divergence": float,
-                "divergences": List[float],
-                "refusals": List[bool],
-            }
+            dict: 完整的验证结果
         """
-        # 计算语义偏离度
-        divergences = self.compute_divergence(original_prompt, backtranslated_prompts)
-        avg_divergence = np.mean(divergences) if divergences else 0.0
+        # 1. Intent Entropy
+        intent_entropy = self.compute_intent_entropy(backtranslated_prompts)
 
-        # 统计拒绝
+        # 2. Surface-Intent Gap
+        surface_intent_gap = self.compute_surface_intent_gap(
+            original_prompt, backtranslated_prompts
+        )
+
+        # 3. Refusal Ratio
         refusals = [self.is_refusal(resp) for resp in bt_responses]
         refusal_ratio = sum(refusals) / len(refusals) if refusals else 0.0
 
         # 综合评分
-        score = self.alpha * refusal_ratio + self.beta * avg_divergence
+        score = (
+            self.alpha * refusal_ratio
+            + self.beta * intent_entropy
+            + self.gamma * surface_intent_gap
+        )
 
         # 判定
         decision = "reject" if score > self.threshold else "accept"
@@ -139,7 +203,13 @@ class SemanticDivergenceVerifier:
             "decision": decision,
             "score": score,
             "refusal_ratio": refusal_ratio,
-            "avg_divergence": avg_divergence,
-            "divergences": divergences,
+            "intent_entropy": intent_entropy,
+            "surface_intent_gap": surface_intent_gap,
             "refusals": refusals,
+            "threshold": self.threshold,
+            "weights": {"alpha": self.alpha, "beta": self.beta, "gamma": self.gamma},
         }
+
+
+# 保持向后兼容
+SemanticDivergenceVerifier = IntentConsistencyVerifier

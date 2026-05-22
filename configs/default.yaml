@@ -1,4 +1,5 @@
-# MB-Defense 默认配置
+# MB-Defense: Multi-Perspective Backtranslation with Intent Consistency Verification
+# Default Configuration
 
 # 模型配置
 model:
@@ -7,32 +8,34 @@ model:
   device: "cuda"
   max_new_tokens: 256
 
-# 轻量预筛选 (Module 1)
+# Module 1: Adaptive Invocation Strategy
+# 根据 prompt ambiguity 决定验证强度 (不会直接放行)
 lightweight_filter:
   enabled: true
-  ppl_threshold: 200.0        # PPL高于此值视为高风险
-  length_threshold: 500       # prompt长度阈值
-  special_char_ratio: 0.3     # 特殊字符比例阈值
+  ppl_threshold: 200.0
+  length_threshold: 500
+  special_char_ratio: 0.3
 
-# 多视角Backtranslation (Module 2)
+# Module 2: Multi-Perspective Backtranslation
 multi_perspective:
-  num_perspectives: 3         # 视角数量 N
+  num_perspectives: 3         # 默认视角数 (filter 可能调整为 1)
   temperature: 0.7
   max_new_tokens: 256
 
-# 语义偏离校验 + 投票 (Module 3)
+# Module 3: Intent Consistency Verification
+# Score = alpha * refusal_ratio + beta * intent_entropy + gamma * surface_intent_gap
 semantic_divergence:
-  alpha: 0.6                  # 拒绝比例权重
-  beta: 0.4                   # 语义偏离度权重
-  threshold: 0.5              # 最终判定阈值
+  alpha: 0.4                  # 拒绝比例权重
+  beta: 0.35                  # intent entropy 权重
+  gamma: 0.25                 # surface-intent gap 权重
+  threshold: 0.45             # 判定阈值
 
 # 实验配置
 experiment:
   attacks:
     - "gcg"
     - "pair"
-    - "autodan"
     - "deepinception"
-  num_samples: 50             # 每种攻击的样本数（调试用，正式实验改为全量）
+  num_samples: 50
   output_dir: "results/"
   seed: 42
