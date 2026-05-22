@@ -51,7 +51,6 @@ class BacktranslationDefense:
             device: 设备
             max_new_tokens: 最大生成token数
         """
-        self.device = device
         self.max_new_tokens = max_new_tokens
 
         print(f"Loading model from {model_path}...")
@@ -62,13 +61,15 @@ class BacktranslationDefense:
             device_map="auto",
         )
         self.model.eval()
-        print("Model loaded.")
+        self.device = next(self.model.parameters()).device
+        print(f"Model loaded on {self.device}.")
 
     def generate(self, prompt: str, temperature: float = 0.7) -> str:
         """生成回复"""
         # Llama-2-Chat 格式
         formatted = f"[INST] {prompt} [/INST]"
-        inputs = self.tokenizer(formatted, return_tensors="pt").to(self.device)
+        inputs = self.tokenizer(formatted, return_tensors="pt")
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         with torch.no_grad():
             outputs = self.model.generate(
