@@ -13,7 +13,7 @@ from typing import List
 class MultiPerspectiveBT:
     """多视角Backtranslation模块"""
 
-    # N个不同角度的backtranslation模板
+    # N个不同角度的backtranslation模板（支持N=1~5）
     TEMPLATES = [
         # 模板1: 直接推断
         (
@@ -38,6 +38,21 @@ class MultiPerspectiveBT:
             "If the request seems benign, state it as-is.\n\n"
             "Response: {response}\n\n"
             "Possible original request:"
+        ),
+        # 模板4: 行为分析视角
+        (
+            "Analyze the following AI response and determine what specific action "
+            "or information the user was seeking. Express it as a direct request.\n\n"
+            "AI Response: {response}\n\n"
+            "User was requesting:"
+        ),
+        # 模板5: 对话还原视角
+        (
+            "Imagine you are a content moderator reviewing an AI conversation. "
+            "Given only the AI's response below, reconstruct what the user likely asked. "
+            "Be specific and direct.\n\n"
+            "AI's response: {response}\n\n"
+            "Reconstructed user query:"
         ),
     ]
 
@@ -69,7 +84,10 @@ class MultiPerspectiveBT:
     def generate(self, prompt: str) -> str:
         """生成回复"""
         formatted = f"[INST] {prompt} [/INST]"
-        inputs = self.tokenizer(formatted, return_tensors="pt").to(self.device)
+        inputs = self.tokenizer(formatted, return_tensors="pt")
+        # 使用模型实际所在的设备
+        model_device = next(self.model.parameters()).device
+        inputs = {k: v.to(model_device) for k, v in inputs.items()}
 
         with torch.no_grad():
             outputs = self.model.generate(

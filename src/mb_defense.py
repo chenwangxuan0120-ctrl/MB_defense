@@ -36,8 +36,9 @@ class MBDefense:
             device_map="auto",
         )
         self.model.eval()
-        self.device = device
-        print("Target model loaded.")
+        # device_map="auto" 时，模型自动分配设备，用 model.device 获取实际设备
+        self.device = next(self.model.parameters()).device
+        print(f"Target model loaded on {self.device}.")
 
         # 初始化 Module 1: 轻量预筛选
         filter_cfg = config["lightweight_filter"]
@@ -72,7 +73,8 @@ class MBDefense:
     def generate(self, prompt: str) -> str:
         """生成回复"""
         formatted = f"[INST] {prompt} [/INST]"
-        inputs = self.tokenizer(formatted, return_tensors="pt").to(self.device)
+        inputs = self.tokenizer(formatted, return_tensors="pt")
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         with torch.no_grad():
             outputs = self.model.generate(
