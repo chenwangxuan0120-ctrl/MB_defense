@@ -1,56 +1,38 @@
-# AutoDL 环境配置指南
+# AutoDL 使用指南
 
-## 1. 租机器
-
-- 镜像: PyTorch 2.1.0 / Python 3.10 (ubuntu22.04) / CUDA 12.1
-- GPU: A100 80G 或 A800 80G
-- 数据盘: 50GB+
-
-## 2. 开机后执行
+## 一键启动（clone 后只需执行这一条）
 
 ```bash
-# 拉代码
-git clone https://github.com/<你的用户名>/MB-Defense.git
-cd MB-Defense
-
-# 装依赖
-pip install -r requirements.txt
-
-# 准备数据
-python scripts/prepare_data.py
-
-# 下载模型 (如果公共目录没有)
-export HF_ENDPOINT=https://hf-mirror.com
-huggingface-cli download meta-llama/Llama-2-7b-chat-hf --local-dir /root/models/llama2-7b-chat
-
-# 验证模型能加载
-python -c "from transformers import AutoTokenizer; t = AutoTokenizer.from_pretrained('/root/models/llama2-7b-chat'); print('OK')"
+git clone https://github.com/chenwangxuan0120-ctrl/MB_defense.git
+cd MB_defense
+bash setup_and_run.sh
 ```
 
-## 3. 快速验证 pipeline 能跑通
+这个脚本会自动完成:
+1. 安装所有 Python 依赖
+2. 查找/下载 Llama-2-7B-Chat 模型
+3. 下载实验数据集 (AdvBench, HarmBench, JailbreakBench)
+4. 运行 pipeline 验证
+
+## 跑实验
 
 ```bash
-# 用5个样本快速测试
-python scripts/run_backtranslation.py --model_path /root/models/llama2-7b-chat --attack gcg --num_samples 5
+# 跑全部实验（baseline + MB-Defense + 消融），约 20-30 小时
+bash scripts/run_all.sh
+
+# 或者分步跑:
+
+# 只跑 GCG baseline
+python scripts/run_backtranslation.py --model_path $(cat .model_path) --attack gcg --run_benign
+
+# 只跑 MB-Defense vs GCG
+python scripts/run_mb_defense.py --model_path $(cat .model_path) --attack gcg --run_benign
 ```
 
-## 4. 正式跑实验
-
-```bash
-# 跑原版baseline
-python scripts/run_backtranslation.py --model_path /root/models/llama2-7b-chat --attack all --num_samples 50
-
-# 跑MB-Defense
-python scripts/run_mb_defense.py --model_path /root/models/llama2-7b-chat --attack all --num_samples 50
-
-# 消融实验
-bash scripts/run_ablation.sh /root/models/llama2-7b-chat
-```
-
-## 5. 结果回传
+## 结果回传
 
 ```bash
 git add results/
-git commit -m "exp: add results for [attack_name]"
+git commit -m "exp: results"
 git push
 ```

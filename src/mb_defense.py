@@ -10,9 +10,9 @@ MB-Defense: 完整的多视角Backtranslation防御流程
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from .lightweight_filter import LightweightFilter
-from .multi_perspective_bt import MultiPerspectiveBT
-from .semantic_divergence import SemanticDivergenceVerifier
+from src.lightweight_filter import LightweightFilter
+from src.multi_perspective_bt import MultiPerspectiveBT
+from src.semantic_divergence import SemanticDivergenceVerifier
 
 
 class MBDefense:
